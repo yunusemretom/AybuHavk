@@ -2,6 +2,17 @@
 # 🧠 YOLOv8 ile Görüntü İşleme
 
 Merhaba! 👋 Bugün YOLOv8 kullanarak görüntü işleme dünyasına adım atıyoruz. Hazırsanız başlayalım 🚀
+---
+
+## 📷 Örnek Görsel
+
+![Test Görseli](Test.png)
+
+---
+
+## 🎬 Video Anlatım
+
+[YOLOv8 Görüntü İşleme Video Anlatımı](https://www.youtube.com/watch?v=qjT9yv-2J88)
 
 ---
 
