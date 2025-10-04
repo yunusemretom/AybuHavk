@@ -1,6 +1,8 @@
 # Import numpy and OpenCV
 import numpy as np
 import cv2
+import os
+import time
 
 
 def movingAverage(curve, radius): 
@@ -14,13 +16,33 @@ def movingAverage(curve, radius):
   # Remove padding 
   curve_smoothed = curve_smoothed[radius:-radius]
   # return smoothed curve
+  return curve_smoothed
+
+def gaussianSmooth(curve, radius):
+  """Gaussian smoothing for better stability"""
+  window_size = 2 * radius + 1
+  # Create gaussian kernel
+  sigma = window_size / 6.0  # 3-sigma rule
+  x = np.arange(window_size) - radius
+  gaussian_kernel = np.exp(-(x**2) / (2 * sigma**2))
+  gaussian_kernel = gaussian_kernel / np.sum(gaussian_kernel)
+  
+  # Add padding to the boundaries 
+  curve_pad = np.lib.pad(curve, (radius, radius), 'edge') 
+  # Apply convolution 
+  curve_smoothed = np.convolve(curve_pad, gaussian_kernel, mode='same') 
+  # Remove padding 
+  curve_smoothed = curve_smoothed[radius:-radius]
   return curve_smoothed 
 
 def smooth(trajectory): 
   smoothed_trajectory = np.copy(trajectory) 
   # Filter the x, y and angle curves
   for i in range(3):
-    smoothed_trajectory[:,i] = movingAverage(trajectory[:,i], radius=SMOOTHING_RADIUS)
+    if SMOOTHING_METHOD == 'gaussian':
+      smoothed_trajectory[:,i] = gaussianSmooth(trajectory[:,i], radius=SMOOTHING_RADIUS)
+    else:
+      smoothed_trajectory[:,i] = movingAverage(trajectory[:,i], radius=SMOOTHING_RADIUS)
 
   return smoothed_trajectory
 
@@ -31,9 +53,44 @@ def fixBorder(frame):
   frame = cv2.warpAffine(frame, T, (s[1], s[0]))
   return frame
 
+def drawFPS(frame, fps, position):
+  """Draw FPS information on frame"""
+  fps_text = f"FPS: {fps:.1f}"
+  
+  # Create background rectangle for better visibility
+  font = cv2.FONT_HERSHEY_SIMPLEX
+  font_scale = 0.7
+  thickness = 2
+  
+  # Get text size
+  (text_width, text_height), baseline = cv2.getTextSize(fps_text, font, font_scale, thickness)
+  
+  # Draw background rectangle
+  cv2.rectangle(frame, 
+                (position[0] - 5, position[1] - text_height - 5),
+                (position[0] + text_width + 5, position[1] + baseline + 5),
+                (0, 0, 0), -1)
+  
+  # Draw FPS text
+  cv2.putText(frame, fps_text, position, font, font_scale, (0, 255, 0), thickness)
+  
+  return frame
+
 
 # The larger the more stable the video, but less reactive to sudden panning
-SMOOTHING_RADIUS=50 
+# Increased from 50 to 100 for better stability
+SMOOTHING_RADIUS=50
+
+# Smoothing method: 'moving_average' or 'gaussian'
+# Gaussian provides smoother results but may be less responsive
+SMOOTHING_METHOD = 'gaussian'  # Change to 'moving_average' if needed
+
+# Apply double smoothing for extra stability (set to True for maximum stability)
+DOUBLE_SMOOTHING = True
+
+# FPS display settings
+SHOW_FPS = True  # Set to False to hide FPS
+FPS_POSITION = (10, 30)  # (x, y) position for FPS text 
 
 # Read input video
 cap = cv2.VideoCapture(r'C:\Users\TOM\Documents\Projeler\AybuHavk\GoruntuStabilize\deneme.mp4') 
@@ -48,11 +105,34 @@ h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 # Get frames per second (fps)
 fps = cap.get(cv2.CAP_PROP_FPS)
  
-# Define the codec for output video
-fourcc = cv2.VideoWriter_fourcc(*'MJPG')
- 
-# Set up output video
-out = cv2.VideoWriter('video_out.mp4', fourcc, fps, (2 * w, h))
+# Define the codec for output video - try multiple codecs for better compatibility
+codecs_to_try = ['mp4v', 'XVID', 'MJPG', 'H264']
+fourcc = None
+out = None
+
+# Set up output video with proper dimensions
+output_width = 2 * w
+output_height = h
+
+# Try different codecs until one works
+for codec in codecs_to_try:
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        out = cv2.VideoWriter('video_out.mp4', fourcc, fps, (output_width, output_height))
+        if out.isOpened():
+            print(f"Successfully initialized video writer with codec: {codec}")
+            break
+        else:
+            out.release()
+            out = None
+    except:
+        continue
+
+# Check if VideoWriter was initialized successfully
+if out is None or not out.isOpened():
+    print("Error: Could not open video writer with any codec")
+    print("Tried codecs:", codecs_to_try)
+    exit()
 
 # Read first frame
 _, prev = cap.read() 
@@ -124,7 +204,12 @@ for i in range(n_frames-2):
 trajectory = np.cumsum(transforms, axis=0) 
  
 # Create variable to store smoothed trajectory
-smoothed_trajectory = smooth(trajectory) 
+smoothed_trajectory = smooth(trajectory)
+
+# Apply double smoothing for extra stability if enabled
+if DOUBLE_SMOOTHING:
+    print("Applying double smoothing for maximum stability...")
+    smoothed_trajectory = smooth(smoothed_trajectory) 
 
 # Calculate difference in smoothed_trajectory and trajectory
 difference = smoothed_trajectory - trajectory
@@ -134,7 +219,11 @@ transforms_smooth = transforms + difference
 
 # Reset stream to first frame 
 cap.set(cv2.CAP_PROP_POS_FRAMES, 0) 
- 
+
+# FPS calculation variables
+fps_start_time = time.time()
+frame_count = 0
+
 # Write n_frames-1 transformed frames
 for i in range(n_frames-2):
   # Read next frame
@@ -169,12 +258,52 @@ for i in range(n_frames-2):
   if(frame_out.shape[1] > 1920): 
     frame_out = cv2.resize(frame_out, (frame_out.shape[1]//2, frame_out.shape[0]//2));
   
+  # Ensure frame dimensions match VideoWriter expectations
+  if frame_out.shape[:2] != (output_height, output_width):
+    frame_out = cv2.resize(frame_out, (output_width, output_height))
+  
+  # Calculate and display FPS
+  if SHOW_FPS:
+    frame_count += 1
+    current_time = time.time()
+    elapsed_time = current_time - fps_start_time
+    
+    if elapsed_time > 0:
+      current_fps = frame_count / elapsed_time
+      frame_out = drawFPS(frame_out, current_fps, FPS_POSITION)
+  
   cv2.imshow("Before and After", frame_out)
   cv2.waitKey(10)
-  out.write(frame_out)
+  
+  # Write frame with error checking
+  success = out.write(frame_out)
+  if not success:
+    print(f"Warning: Failed to write frame {i}")
 
-# Release video
+# Release video and ensure proper cleanup
 cap.release()
+
+# Ensure all frames are written before releasing
 out.release()
+
+# Calculate and display final FPS statistics
+if SHOW_FPS:
+    total_time = time.time() - fps_start_time
+    average_fps = frame_count / total_time if total_time > 0 else 0
+    print(f"\n=== FPS Statistics ===")
+    print(f"Total frames processed: {frame_count}")
+    print(f"Total processing time: {total_time:.2f} seconds")
+    print(f"Average FPS: {average_fps:.2f}")
+
+# Verify video file was created successfully
+if os.path.exists('video_out.mp4'):
+    file_size = os.path.getsize('video_out.mp4')
+    if file_size > 0:
+        print(f"Video successfully saved as 'video_out.mp4' ({file_size} bytes)")
+    else:
+        print("Warning: Video file is empty")
+else:
+    print("Error: Video file was not created")
+
 # Close windows
 cv2.destroyAllWindows()
